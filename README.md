@@ -14,7 +14,7 @@ ace-cache可以快速用于日常的spring boot应用之中。<br>
 </dependency>
 ```
 ## 缓存配置
-1、配置redis数据源，application.yml文件
+1、配置redis数据源，application.yml文件，与原版有区别的是现在可以配置多节点的host、port，用“,”分割，并做笛卡尔积
 ```
 #redis-cache 相关
 redis:
@@ -30,6 +30,7 @@ redis:
     sysName: ace
     enable: true
     database: 0
+    cluster:false
 ```
 ## 缓存开启
 2、开启AOP扫描
