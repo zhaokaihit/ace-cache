@@ -12,6 +12,7 @@ import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 
 import javax.annotation.PostConstruct;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Configuration
 public class RedisConfig {
@@ -28,11 +29,18 @@ public class RedisConfig {
     private String port;
     private String enable;
     private String sysName;
+    private String cluster;
+
+    protected static ReentrantLock lockPool = new ReentrantLock();
+    protected static ReentrantLock lockJedis = new ReentrantLock();
+    private static JedisPool jedisPool = null;
+
 
     @PostConstruct
     public void  init(){
-        PropertiesLoaderUtils prop = new PropertiesLoaderUtils("application.properties");
-        host = prop.getProperty("redis.host");
+        //PropertiesLoaderUtils prop = new PropertiesLoaderUtils("application.properties");
+        PropertiesLoaderUtils prop = new PropertiesLoaderUtils("application.yml");
+/*        host = prop.getProperty("redis.host");
         if(StringUtils.isBlank(host)){
             host = env.getProperty("redis.host");
             maxActive = env.getProperty("redis.pool.maxActive");
@@ -44,6 +52,7 @@ public class RedisConfig {
             port = env.getProperty("redis.port");
             sysName = env.getProperty("redis.sysName");
             enable = env.getProperty("redis.enable");
+            cluster = env.getProperty("redis.cluster");
         } else{
             maxActive = prop.getProperty("redis.pool.maxActive");
             maxIdle  = prop.getProperty("redis.pool.maxIdle");
@@ -54,11 +63,40 @@ public class RedisConfig {
             port = prop.getProperty("redis.port");
             sysName = prop.getProperty("redis.sysName");
             enable = prop.getProperty("redis.enable");
+            cluster = prop.getProperty("redis.cluster");
+        }*/
+
+        host = prop.getProperty("host");
+        if(StringUtils.isBlank(host)){
+            host = env.getProperty("redis.host");
+            maxActive = env.getProperty("redis.pool.maxActive");
+            maxIdle  = env.getProperty("redis.pool.maxIdle");
+            maxWait = env.getProperty("redis.pool.maxWait");
+            password = env.getProperty("redis.password");
+            timeout = env.getProperty("redis.timeout");
+            database = env.getProperty("redis.database");
+            port = env.getProperty("redis.port");
+            sysName = env.getProperty("redis.sysName");
+            enable = env.getProperty("redis.enable");
+            cluster = env.getProperty("redis.cluster");
+        } else{
+            maxActive = prop.getProperty("maxActive");
+            maxIdle  = prop.getProperty("maxIdle");
+            maxWait = prop.getProperty("maxWait");
+            password = prop.getProperty("password");
+            timeout = prop.getProperty("timeout");
+            database = prop.getProperty("database");
+            port = prop.getProperty("port");
+            sysName = prop.getProperty("sysName");
+            enable = prop.getProperty("enable");
+            cluster = prop.getProperty("cluster");
         }
     }
 
+
     @Bean
     public JedisPoolConfig constructJedisPoolConfig() {
+
         JedisPoolConfig config = new JedisPoolConfig();
         // 控制一个pool可分配多少个jedis实例，通过pool.getResource()来获取；
         // 如果赋值为-1，则表示不限制；如果pool已经分配了maxActive个jedis实例，则此时pool的状态为exhausted(耗尽)。
@@ -67,25 +105,44 @@ public class RedisConfig {
         config.setMaxIdle(Integer.parseInt(maxIdle));
         // 表示当borrow(引入)一个jedis实例时，最大的等待时间，如果超过等待时间，则直接抛出JedisConnectionException；
         config.setMaxWaitMillis(Integer.parseInt(maxWait));
-        config.setTestOnBorrow(true);
+        config.setTestOnBorrow(false);
 
         return config;
     }
 
     @Bean(name = "pool")
     public JedisPool constructJedisPool() {
-        String ip = this.host;
-        int port = Integer.parseInt(this.port);
+        String ip = this.host.split(",")[0];
+        int port = Integer.parseInt(this.port.split(",")[0]);
         String password = this.password;
         int timeout = Integer.parseInt(this.timeout);
         int database = Integer.parseInt(this.database);
-        if (null == pool) {
-            if (StringUtils.isBlank(password)) {
-                pool = new JedisPool(constructJedisPoolConfig(), ip, port, timeout);
-            } else {
-                pool = new JedisPool(constructJedisPoolConfig(), ip, port, timeout, password, database);
+        boolean cluster = this.cluster.equals("true");
+        if(!cluster)
+        {
+            if (null == pool) {
+                if (StringUtils.isBlank(password)) {
+                    pool = new JedisPool(constructJedisPoolConfig(), ip, port, timeout);
+                } else {
+                    pool = new JedisPool(constructJedisPoolConfig(), ip, port, timeout, password, database);
+                }
             }
         }
+        else
+        {
+            lockPool.lock();
+            try {
+                if (jedisPool == null) {
+                    jedisPool = new JedisPool(constructJedisPoolConfig(), ip, port, timeout);
+                    pool = jedisPool;
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            } finally {
+                lockPool.unlock();
+            }
+        }
+
         return pool;
     }
 
@@ -167,5 +224,12 @@ public class RedisConfig {
 
     public void setPort(String port) {
         this.port = port;
+    }
+    public String getCluster() {
+        return cluster;
+    }
+
+    public void setCluster(String cluster) {
+        this.cluster = cluster;
     }
 }

@@ -1,39 +1,87 @@
 package com.ace.cache.service.impl;
 
-import java.util.Date;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
+import java.util.concurrent.locks.ReentrantLock;
 
+import com.ace.cache.config.RedisConfig;
 import com.ace.cache.service.IRedisService;
 import org.apache.log4j.Logger;
 import org.joda.time.DateTime;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.session.SessionProperties;
 import org.springframework.stereotype.Service;
 
+import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisCluster;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.BinaryClient.LIST_POSITION;
 
 @Service
 public class RedisServiceImpl implements IRedisService {
     private static final Logger LOGGER = Logger.getLogger(RedisServiceImpl.class);
+    protected static ReentrantLock lockPool = new ReentrantLock();
+    protected static ReentrantLock lockJedis = new ReentrantLock();
 
     @Autowired
     private JedisPool pool;
+
+    private  static RedisConfig redisConfig = new RedisConfig();
+
+    private final static Set<HostAndPort> jedisClusterNodes = new HashSet<HostAndPort>();
+    private static boolean isCluster;
+
+    public RedisServiceImpl(){
+
+        redisConfig.init();
+        isCluster=redisConfig.getCluster().equals("true");
+        //isCluster = true;
+        String[] hosts=redisConfig.getHost().split(",");
+        String[] ports=redisConfig.getPort().split(",");
+        for (String host:hosts) {
+            for (String port:ports)
+            {
+                jedisClusterNodes.add(new HostAndPort(host, Integer.parseInt(port)));
+            }
+
+        }
+        /*jedisClusterNodes.add(new HostAndPort("192.168.29.111", 7000));
+        jedisClusterNodes.add(new HostAndPort("192.168.29.111", 7001));
+        jedisClusterNodes.add(new HostAndPort("192.168.29.111", 7002));
+        jedisClusterNodes.add(new HostAndPort("192.168.29.112", 7000));
+        jedisClusterNodes.add(new HostAndPort("192.168.29.112", 7001));
+        jedisClusterNodes.add(new HostAndPort("192.168.29.112", 7002));
+        jedisClusterNodes.add(new HostAndPort("192.168.29.113", 7000));
+        jedisClusterNodes.add(new HostAndPort("192.168.29.113", 7001));
+        jedisClusterNodes.add(new HostAndPort("192.168.29.113", 7002));
+        jedisClusterNodes.add(new HostAndPort("192.168.29.114", 7000));
+        jedisClusterNodes.add(new HostAndPort("192.168.29.114", 7001));
+        jedisClusterNodes.add(new HostAndPort("192.168.29.114", 7002));*/
+    }
+
+
 
     @Override
     public String get(String key) {
         Jedis jedis = null;
         String value = null;
         try {
-            jedis = pool.getResource();
-            value = jedis.get(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                value = jc.get(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                value = jedis.get(key);
+                returnResource(pool, jedis);
+            }
+
         } catch (Exception e) {
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
+
         }
         return value;
     }
@@ -42,13 +90,24 @@ public class RedisServiceImpl implements IRedisService {
     public Set<String> getByPre(String pre) {
         Jedis jedis = null;
         Set<String> value = null;
+
         try {
-            jedis = pool.getResource();
-            value = jedis.keys(pre + "*");
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                value = jc.hkeys(pre + "*");
+            }
+            else
+            {
+                jedis = pool.getResource();
+                value = jedis.keys(pre + "*");
+                returnResource(pool, jedis);
+            }
+
         } catch (Exception e) {
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
+
         }
         return value;
     }
@@ -56,66 +115,122 @@ public class RedisServiceImpl implements IRedisService {
     @Override
     public String set(String key, String value) {
         Jedis jedis = null;
+        String result = new String();
         try {
-            jedis = pool.getResource();
-            return jedis.set(key, value);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                result= jc.set(key, value);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                returnResource(pool, jedis);
+                result= jedis.set(key, value);
+            }
+
         } catch (Exception e) {
             LOGGER.error(e.getMessage());
-            return "0";
-        } finally {
-            returnResource(pool, jedis);
         }
+        return result;
     }
 
     @Override
     public String set(String key, String value, int expire) {
         Jedis jedis = null;
+        String result = new String();
         try {
-            jedis = pool.getResource();
-            int time = jedis.ttl(key).intValue() + expire;
-            String result = jedis.set(key, value);
-            jedis.expire(key, time);
-            return result;
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                int time = jc.ttl(key).intValue() + expire;
+                result = jc.set(key, value);
+                jc.expire(key, time);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                int time = jedis.ttl(key).intValue() + expire;
+                result = jedis.set(key, value);
+                jedis.expire(key, time);
+                returnResource(pool, jedis);
+
+            }
+
         } catch (Exception e) {
             LOGGER.error(e.getMessage());
-            return "0";
         } finally {
-            returnResource(pool, jedis);
+
         }
+        return result;
     }
 
     @Override
     public Long delPre(String key) {
         Jedis jedis = null;
+        Long longresult =null;
         try {
-            jedis = pool.getResource();
-            Set<String> set = jedis.keys(key + "*");
-            int result = set.size();
-            Iterator<String> it = set.iterator();
-            while (it.hasNext()) {
-                String keyStr = it.next();
-                jedis.del(keyStr);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                Set<String> set = jc.hkeys(key + "*");
+                int result = set.size();
+                Iterator<String> it = set.iterator();
+                while (it.hasNext()) {
+                    String keyStr = it.next();
+                    jc.del(keyStr);
+                }
+                longresult=new Long(result);
             }
-            return new Long(result);
+            else
+            {
+                jedis = pool.getResource();
+                Set<String> set = jedis.keys(key + "*");
+                int result = set.size();
+                Iterator<String> it = set.iterator();
+                while (it.hasNext()) {
+                    String keyStr = it.next();
+                    jedis.del(keyStr);
+                }
+                returnResource(pool, jedis);
+
+                longresult=new Long(result);
+            }
+
         } catch (Exception e) {
             LOGGER.error(e.getMessage());
-            return 0L;
         } finally {
-            returnResource(pool, jedis);
+
         }
+        return longresult;
     }
 
     @Override
     public Long del(String... keys) {
         Jedis jedis = null;
+        Long res = null;
         try {
-            jedis = pool.getResource();
-            return jedis.del(keys);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                //令人遗憾的是jc不能批量删除。。。
+                //res = jc.del(keys);
+                for(String key:keys) {
+                    jc.del(key);
+                }
+                return res;
+            }
+            else
+            {
+                jedis = pool.getResource();
+                returnResource(pool, jedis);
+                return jedis.del(keys);
+            }
         } catch (Exception e) {
             LOGGER.error(e.getMessage());
             return 0L;
-        } finally {
-            returnResource(pool, jedis);
+        }  finally {
+
         }
     }
 
@@ -124,14 +239,22 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.append(key, str);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.append(key, str);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.append(key, str);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
             return 0L;
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -140,14 +263,23 @@ public class RedisServiceImpl implements IRedisService {
     public Boolean exists(String key) {
         Jedis jedis = null;
         try {
-            jedis = pool.getResource();
-            return jedis.exists(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                return jc.exists(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                returnResource(pool, jedis);
+                return jedis.exists(key);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
             return false;
         } finally {
-            returnResource(pool, jedis);
+
         }
     }
 
@@ -155,14 +287,23 @@ public class RedisServiceImpl implements IRedisService {
     public Long setnx(String key, String value) {
         Jedis jedis = null;
         try {
-            jedis = pool.getResource();
-            return jedis.setnx(key, value);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                return jc.setnx(key, value);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                returnResource(pool, jedis);
+                return jedis.setnx(key, value);
+            }
+
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
             return 0L;
         } finally {
-            returnResource(pool, jedis);
         }
     }
 
@@ -171,13 +312,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.setex(key, seconds, value);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.setex(key, seconds, value);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.setex(key, seconds, value);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -186,14 +335,22 @@ public class RedisServiceImpl implements IRedisService {
     public Long setrange(String key, String str, int offset) {
         Jedis jedis = null;
         try {
-            jedis = pool.getResource();
-            return jedis.setrange(key, offset, str);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                return jc.setrange(key, offset, str);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                returnResource(pool, jedis);
+                return jedis.setrange(key, offset, str);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
             return 0L;
         } finally {
-            returnResource(pool, jedis);
         }
     }
 
@@ -202,13 +359,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         List<String> values = null;
         try {
-            jedis = pool.getResource();
-            values = jedis.mget(keys);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                values = jc.mget(keys);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                values = jedis.mget(keys);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return values;
     }
@@ -218,13 +383,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.mset(keysvalues);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.mset(keysvalues);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.mset(keysvalues);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -234,13 +407,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = 0L;
         try {
-            jedis = pool.getResource();
-            res = jedis.msetnx(keysvalues);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.msetnx(keysvalues);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.msetnx(keysvalues);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -250,13 +431,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.getSet(key, value);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.getSet(key, value);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.getSet(key, value);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -266,13 +455,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.getrange(key, startOffset, endOffset);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.getrange(key, startOffset, endOffset);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.getrange(key, startOffset, endOffset);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -282,13 +479,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.incr(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.incr(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.incr(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -298,13 +503,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.incrBy(key, integer);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.incrBy(key, integer);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.incrBy(key, integer);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -315,13 +528,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.decr(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.decr(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.decr(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -332,13 +553,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.decrBy(key, integer);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.decrBy(key, integer);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.decrBy(key, integer);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -349,13 +578,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.strlen(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.strlen(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.strlen(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -366,13 +603,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.hset(key, field, value);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hset(key, field, value);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hset(key, field, value);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -383,13 +628,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.hsetnx(key, field, value);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hsetnx(key, field, value);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hsetnx(key, field, value);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -400,13 +653,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.hmset(key, hash);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hmset(key, hash);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hmset(key, hash);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -417,13 +678,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.hget(key, field);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hget(key, field);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hget(key, field);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -434,13 +703,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         List<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.hmget(key, fields);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hmget(key, fields);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hmget(key, fields);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -451,13 +728,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.hincrBy(key, field, value);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hincrBy(key, field, value);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hincrBy(key, field, value);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -468,13 +753,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Boolean res = false;
         try {
-            jedis = pool.getResource();
-            res = jedis.hexists(key, field);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hexists(key, field);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hexists(key, field);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -485,13 +778,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.hlen(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hlen(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hlen(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
 
@@ -503,13 +804,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.hdel(key, fields);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hdel(key, fields);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hdel(key, fields);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -520,13 +829,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Set<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.hkeys(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hkeys(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hkeys(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -537,13 +854,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         List<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.hvals(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hvals(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hvals(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -554,12 +879,20 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Map<String, String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.hgetAll(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hgetAll(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.hgetAll(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
             // TODO
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -570,13 +903,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.lpush(key, strs);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.lpush(key, strs);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.lpush(key, strs);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -587,13 +928,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.rpush(key, strs);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.rpush(key, strs);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.rpush(key, strs);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -604,13 +953,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.linsert(key, where, pivot, value);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.linsert(key, where, pivot, value);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.linsert(key, where, pivot, value);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -621,13 +978,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.lset(key, index, value);
+            if(isCluster) {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.lset(key, index, value);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.lset(key, index, value);
+                returnResource(pool, jedis);
+            }
+
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -638,13 +1003,22 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.lrem(key, count, value);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.lrem(key, count, value);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.lrem(key, count, value);
+                returnResource(pool, jedis);
+            }
+
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -655,13 +1029,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.ltrim(key, start, end);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.ltrim(key, start, end);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.ltrim(key, start, end);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -672,13 +1054,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.lpop(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.lpop(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.lpop(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -689,13 +1079,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.rpop(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.rpop(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.rpop(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -706,13 +1104,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.rpoplpush(srckey, dstkey);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.rpoplpush(srckey, dstkey);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.rpoplpush(srckey, dstkey);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -723,13 +1129,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.lindex(key, index);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.lindex(key, index);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.lindex(key, index);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -740,13 +1154,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.llen(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.llen(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.llen(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -757,13 +1179,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         List<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.lrange(key, start, end);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.lrange(key, start, end);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.lrange(key, start, end);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -774,13 +1204,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.sadd(key, members);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.sadd(key, members);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.sadd(key, members);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -791,13 +1229,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.srem(key, members);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.srem(key, members);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.srem(key, members);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -808,13 +1254,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.spop(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.spop(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.spop(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -825,13 +1279,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Set<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.sdiff(keys);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.sdiff(keys);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.sdiff(keys);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -842,13 +1304,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.sdiffstore(dstkey, keys);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.sdiffstore(dstkey, keys);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.sdiffstore(dstkey, keys);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -859,13 +1329,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Set<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.sinter(keys);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.sinter(keys);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.sinter(keys);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -876,13 +1354,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.sinterstore(dstkey, keys);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.sinterstore(dstkey, keys);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.sinterstore(dstkey, keys);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -893,13 +1379,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Set<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.sunion(keys);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.sunion(keys);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.sunion(keys);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -910,13 +1404,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.sunionstore(dstkey, keys);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.sunionstore(dstkey, keys);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.sunionstore(dstkey, keys);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -927,13 +1429,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.smove(srckey, dstkey, member);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.smove(srckey, dstkey, member);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.smove(srckey, dstkey, member);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -944,13 +1454,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.scard(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.scard(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.scard(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -961,13 +1479,22 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Boolean res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.sismember(key, member);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.sismember(key, member);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.sismember(key, member);
+                returnResource(pool, jedis);
+            }
+
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -978,13 +1505,22 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.srandmember(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.srandmember(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.srandmember(key);
+                returnResource(pool, jedis);
+            }
+
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -995,13 +1531,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Set<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.smembers(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.smembers(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.smembers(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1011,13 +1555,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zadd(key, score, member);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zadd(key, score, member);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zadd(key, score, member);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1027,13 +1579,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zrem(key, members);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zrem(key, members);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zrem(key, members);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1044,13 +1604,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Double res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zincrby(key, score, member);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zincrby(key, score, member);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zincrby(key, score, member);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1061,13 +1629,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zrank(key, member);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zrank(key, member);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zrank(key, member);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1078,13 +1654,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zrevrank(key, member);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zrevrank(key, member);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zrevrank(key, member);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1095,13 +1679,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Set<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zrevrange(key, start, end);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zrevrange(key, start, end);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zrevrange(key, start, end);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1112,13 +1704,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Set<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zrevrangeByScore(key, max, min);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zrevrangeByScore(key, max, min);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zrevrangeByScore(key, max, min);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1129,13 +1729,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Set<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zrevrangeByScore(key, max, min);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zrevrangeByScore(key, max, min);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zrevrangeByScore(key, max, min);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1146,13 +1754,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zcount(key, min, max);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zcount(key, min, max);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zcount(key, min, max);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1163,13 +1779,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zcard(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zcard(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zcard(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1180,13 +1804,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Double res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zscore(key, member);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zscore(key, member);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zscore(key, member);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1197,13 +1829,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zremrangeByRank(key, start, end);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zremrangeByRank(key, start, end);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zremrangeByRank(key, start, end);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1214,13 +1854,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Long res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.zremrangeByScore(key, start, end);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.zremrangeByScore(key, start, end);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.zremrangeByScore(key, start, end);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1231,13 +1879,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         Set<String> res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.keys(pattern);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.hkeys(pattern);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.keys(pattern);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1247,13 +1903,21 @@ public class RedisServiceImpl implements IRedisService {
         Jedis jedis = null;
         String res = null;
         try {
-            jedis = pool.getResource();
-            res = jedis.type(key);
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = jc.type(key);
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = jedis.type(key);
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
 
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
@@ -1273,14 +1937,23 @@ public class RedisServiceImpl implements IRedisService {
     @Override
     public Date getExpireDate(String key) {
         Jedis jedis = null;
+
         Date res = new Date();
         try {
-            jedis = pool.getResource();
-            res = new DateTime().plusSeconds(jedis.ttl(key).intValue()).toDate();
+            if(isCluster)
+            {
+                JedisCluster jc = new JedisCluster(jedisClusterNodes);
+                res = new DateTime().plusSeconds(jc.ttl(key).intValue()).toDate();
+            }
+            else
+            {
+                jedis = pool.getResource();
+                res = new DateTime().plusSeconds(jedis.ttl(key).intValue()).toDate();
+                returnResource(pool, jedis);
+            }
         } catch (Exception e) {
             LOGGER.error(e.getMessage());
         } finally {
-            returnResource(pool, jedis);
         }
         return res;
     }
